@@ -543,21 +543,41 @@ See https://github.com/OraOpenSource/Logger/issues/128 for more info!',
    * @param o_lineno
    */
   procedure get_debug_info(
-    p_callstack in clob,
+    p_callstack in clob default null,
     o_unit out varchar2,
     o_lineno out varchar2 )
   as
-    --
     l_callstack varchar2(10000) := p_callstack;
+    l_sub_program utl_call_stack.unit_qualified_name;
+    l_current_unit varchar2(257);
+    l_log_package_name varchar2(128) := $$PLSQL_UNIT_OWNER || '.' || $$PLSQL_UNIT;
+    l_level pls_integer := 2;  -- offset to save internal iterations
+    
+    function get_package_name(p_unit_name in varchar2) return varchar2 is
+    begin
+      return substr(p_unit_name, 1, instr(p_unit_name, '.') - 1);
+    end get_package_name;
   begin
     $if $$no_op $then
       null;
     $else
-      l_callstack := substr( l_callstack, instr( l_callstack, chr(10), 1, 5 )+1 );
-      l_callstack := substr( l_callstack, 1, instr( l_callstack, chr(10), 1, 1 )-1 );
-      l_callstack := trim( substr( l_callstack, instr( l_callstack, ' ' ) ) );
-      o_lineno := substr( l_callstack, 1, instr( l_callstack, ' ' )-1 );
-      o_unit := trim(substr( l_callstack, instr( l_callstack, ' ', -1, 1 ) ));
+		$if dbms_db_version.ver_le_11_2 $then
+			l_callstack := substr( l_callstack, instr( l_callstack, chr(10), 1, 5 )+1 );
+			l_callstack := substr( l_callstack, 1, instr( l_callstack, chr(10), 1, 1 )-1 );
+			l_callstack := trim( substr( l_callstack, instr( l_callstack, ' ' ) ) );
+			o_lineno := substr( l_callstack, 1, instr( l_callstack, ' ' )-1 );
+			o_unit := trim(substr( l_callstack, instr( l_callstack, ' ', -1, 1 ) ));
+		$else
+		    --2019-01-23  Vidar Eidissen: catching first package outside the logger-package as the calling
+			l_current_unit := l_log_package_name;
+			while l_level < utl_call_stack.dynamic_depth and l_current_unit = l_log_package_name loop
+				l_level := l_level + 1;
+				l_sub_program := UTL_CALL_STACK.SUBPROGRAM(l_level);
+				l_current_unit := utl_call_stack.owner(l_level) || '.' || get_package_name(utl_call_stack.concatenate_subprogram(l_sub_program));
+			end loop;
+			o_unit := utl_call_stack.owner(l_level) || '.' || utl_call_stack.concatenate_subprogram(l_sub_program);
+			o_lineno := utl_call_stack.unit_line(l_level);
+		$end
     $end
   end get_debug_info;
 
@@ -599,10 +619,18 @@ See https://github.com/OraOpenSource/Logger/issues/128 for more info!',
 
       -- Generate callstack text
       if p_callstack is not null and logger.include_call_stack then
-        logger.get_debug_info(
-          p_callstack => p_callstack,
-          o_unit => l_proc_name,
-          o_lineno => l_lineno);
+		  
+		$if dbms_db_version.ver_le_11_2 $then
+			logger.get_debug_info(
+			  p_callstack => p_callstack,
+			  o_unit => l_proc_name,
+			  o_lineno => l_lineno);
+		$else
+		    --2019-01-23  Vidar Eidissen: don't need to pass the call stack to get the unit and line from 12c
+			logger.get_debug_info(
+			  o_unit => l_proc_name,
+			  o_lineno => l_lineno);
+		$end
 
         l_callstack  := regexp_replace(p_callstack,'^.*$','',1,4,'m');
         l_callstack  := regexp_replace(l_callstack,'^.*$','',1,1,'m');
